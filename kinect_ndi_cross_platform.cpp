@@ -11,7 +11,8 @@
   #include <windows.h>
 #endif
 
-#include <freenect.h>
+// Use the correct header name for libfreenect.
+#include <libfreenect.h>
 #include <Processing.NDI.Lib.h>
 
 // Frame dimensions.
@@ -151,11 +152,13 @@ int main(int argc, char** argv) {
         // Set up video stream if enabled.
         if (enable_ir || enable_rgb) {
             freenect_set_video_callback(f_dev, VideoCallback);
-            if (enable_ir)
-                freenect_set_video_format(f_dev, FREENECT_VIDEO_IR_8BIT);
-            else if (enable_rgb)
-                freenect_set_video_format(f_dev, FREENECT_VIDEO_RGB);
-            if (freenect_start_video(f_dev) < 0) {
+            freenect_frame_mode video_mode;
+            if (enable_ir) {
+                video_mode = freenect_find_video_mode(FREENECT_RESOLUTION_MEDIUM, FREENECT_VIDEO_IR_8BIT);
+            } else if (enable_rgb) {
+                video_mode = freenect_find_video_mode(FREENECT_RESOLUTION_MEDIUM, FREENECT_VIDEO_RGB);
+            }
+            if (freenect_set_video_mode(f_dev, video_mode) < 0) {
                 std::cerr << "Could not start the video stream. Reconnecting..." << std::endl;
                 freenect_close_device(f_dev);
                 freenect_shutdown(f_ctx);
@@ -166,8 +169,8 @@ int main(int argc, char** argv) {
         // Set up depth stream if enabled.
         if (enable_depth) {
             freenect_set_depth_callback(f_dev, DepthCallback);
-            freenect_set_depth_format(f_dev, FREENECT_DEPTH_11BIT);
-            if (freenect_start_depth(f_dev) < 0) {
+            freenect_frame_mode depth_mode = freenect_find_depth_mode(FREENECT_RESOLUTION_MEDIUM, FREENECT_DEPTH_11BIT);
+            if (freenect_set_depth_mode(f_dev, depth_mode) < 0) {
                 std::cerr << "Could not start the depth stream. Reconnecting..." << std::endl;
                 if (enable_ir || enable_rgb)
                     freenect_stop_video(f_dev);
@@ -227,10 +230,10 @@ int main(int argc, char** argv) {
                 videoFrame.frame_rate_N = 30;
                 videoFrame.frame_rate_D = 1;
                 videoFrame.picture_aspect_ratio = static_cast<float>(WIDTH) / HEIGHT;
-                videoFrame.data = rgbaFrame.data();
+                videoFrame.p_data = rgbaFrame.data();
                 videoFrame.line_stride_in_bytes = WIDTH * 4;
                 if (ndiSenderVideo)
-                    NDIlib_send_send_video_frame(ndiSenderVideo, &videoFrame);
+                    NDIlib_send_send_video_async_v2(ndiSenderVideo, &videoFrame);
             }
 
             // Process depth frame if available.
@@ -258,10 +261,10 @@ int main(int argc, char** argv) {
                 depthFrame.frame_rate_N = 30;
                 depthFrame.frame_rate_D = 1;
                 depthFrame.picture_aspect_ratio = static_cast<float>(WIDTH) / HEIGHT;
-                depthFrame.data = rgbaFrame.data();
+                depthFrame.p_data = rgbaFrame.data();
                 depthFrame.line_stride_in_bytes = WIDTH * 4;
                 if (ndiSenderDepth)
-                    NDIlib_send_send_video_frame(ndiSenderDepth, &depthFrame);
+                    NDIlib_send_send_video_async_v2(ndiSenderDepth, &depthFrame);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }  // End inner loop
