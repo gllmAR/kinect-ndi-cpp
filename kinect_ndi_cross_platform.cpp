@@ -11,7 +11,7 @@
   #include <windows.h>
 #endif
 
-// Use the correct header name for libfreenect.
+// Kinect and NDI headers.
 #include <libfreenect.h>
 #include <Processing.NDI.Lib.h>
 
@@ -38,7 +38,8 @@ std::atomic<bool> newDepthFrame(false);
 std::vector<uint16_t> depthBuffer; // Size: WIDTH * HEIGHT
 
 // Callback for video frames (IR or RGB).
-void VideoCallback(freenect_device* dev, void* video, uint32_t timestamp) {
+void VideoCallback(freenect_device* dev, void* video, uint32_t /*timestamp*/)
+{
     std::lock_guard<std::mutex> lock(videoMutex);
     size_t frameSize = WIDTH * HEIGHT * videoChannels;
     if (videoBuffer.size() != frameSize)
@@ -48,7 +49,8 @@ void VideoCallback(freenect_device* dev, void* video, uint32_t timestamp) {
 }
 
 // Callback for depth frames.
-void DepthCallback(freenect_device* dev, void* depth, uint32_t timestamp) {
+void DepthCallback(freenect_device* dev, void* depth, uint32_t /*timestamp*/)
+{
     std::lock_guard<std::mutex> lock(depthMutex);
     size_t frameSize = WIDTH * HEIGHT;
     if (depthBuffer.size() != frameSize)
@@ -70,7 +72,8 @@ void PrintUsage(const char* progName) {
               << "  Depth streaming can be enabled along with either video mode.\n";
 }
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv)
+{
     // Parse command-line arguments.
     if (argc < 2) {
         PrintUsage(argv[0]);
@@ -101,16 +104,16 @@ int main(int argc, char** argv) {
         std::cerr << "Error: No streaming mode enabled. Use --ir, --rgb, and/or --depth.\n";
         return 1;
     }
-    // Set the number of video channels based on the mode.
+    // Set the number of video channels.
     if (enable_ir) {
         videoChannels = 1;
     } else if (enable_rgb) {
         videoChannels = 3;
     }
-
+    
     // Initialize the NDI library.
     if (!NDIlib_initialize()) {
-        std::cerr << "Cannot run NDI – please ensure the NDI runtime is installed." << std::endl;
+        std::cerr << "NDI initialization failed – please ensure the NDI runtime is installed." << std::endl;
         return 1;
     }
     
@@ -118,30 +121,44 @@ int main(int argc, char** argv) {
     NDIlib_send_instance_t ndiSenderVideo = nullptr;
     if (enable_ir || enable_rgb) {
         NDIlib_send_create_t ndiSendDesc;
+        std::memset(&ndiSendDesc, 0, sizeof(ndiSendDesc));
         ndiSendDesc.p_ndi_name = (enable_ir ? "Kinect IR Stream" : "Kinect RGB Stream");
         ndiSenderVideo = NDIlib_send_create(&ndiSendDesc);
+        if (!ndiSenderVideo) {
+            std::cerr << "Failed to create NDI video sender." << std::endl;
+            NDIlib_destroy();
+            return 1;
+        }
     }
     NDIlib_send_instance_t ndiSenderDepth = nullptr;
     if (enable_depth) {
         NDIlib_send_create_t ndiSendDesc;
+        std::memset(&ndiSendDesc, 0, sizeof(ndiSendDesc));
         ndiSendDesc.p_ndi_name = "Kinect Depth Stream";
         ndiSenderDepth = NDIlib_send_create(&ndiSendDesc);
+        if (!ndiSenderDepth) {
+            std::cerr << "Failed to create NDI depth sender." << std::endl;
+            if (ndiSenderVideo)
+                NDIlib_send_destroy(ndiSenderVideo);
+            NDIlib_destroy();
+            return 1;
+        }
     }
-
+    
     std::cout << "Starting Kinect streaming with auto-detection and reconnection..." << std::endl;
-
+    
     // Outer loop: attempt to (re)connect to the Kinect device.
     while (true) {
         freenect_context* f_ctx = nullptr;
         freenect_device* f_dev = nullptr;
 
-        // Try initializing the Kinect context.
+        // Initialize the Kinect context.
         if (freenect_init(&f_ctx, nullptr) < 0) {
             std::cerr << "freenect_init() failed. No Kinect found. Retrying in 5 seconds..." << std::endl;
             std::this_thread::sleep_for(std::chrono::seconds(5));
             continue;
         }
-        // Try opening the first available Kinect.
+        // Open the first available Kinect.
         if (freenect_open_device(f_ctx, &f_dev, 0) < 0) {
             std::cerr << "Could not open Kinect device. Retrying in 5 seconds..." << std::endl;
             freenect_shutdown(f_ctx);
@@ -155,10 +172,18 @@ int main(int argc, char** argv) {
             freenect_frame_mode video_mode;
             if (enable_ir) {
                 video_mode = freenect_find_video_mode(FREENECT_RESOLUTION_MEDIUM, FREENECT_VIDEO_IR_8BIT);
-            } else if (enable_rgb) {
+            } else { // RGB mode
                 video_mode = freenect_find_video_mode(FREENECT_RESOLUTION_MEDIUM, FREENECT_VIDEO_RGB);
             }
             if (freenect_set_video_mode(f_dev, video_mode) < 0) {
+                std::cerr << "Could not set the video mode. Reconnecting..." << std::endl;
+                freenect_close_device(f_dev);
+                freenect_shutdown(f_ctx);
+                std::this_thread::sleep_for(std::chrono::seconds(5));
+                continue;
+            }
+            // IMPORTANT: Start the video stream.
+            if (freenect_start_video(f_dev) < 0) {
                 std::cerr << "Could not start the video stream. Reconnecting..." << std::endl;
                 freenect_close_device(f_dev);
                 freenect_shutdown(f_ctx);
@@ -171,6 +196,16 @@ int main(int argc, char** argv) {
             freenect_set_depth_callback(f_dev, DepthCallback);
             freenect_frame_mode depth_mode = freenect_find_depth_mode(FREENECT_RESOLUTION_MEDIUM, FREENECT_DEPTH_11BIT);
             if (freenect_set_depth_mode(f_dev, depth_mode) < 0) {
+                std::cerr << "Could not set the depth mode. Reconnecting..." << std::endl;
+                if (enable_ir || enable_rgb)
+                    freenect_stop_video(f_dev);
+                freenect_close_device(f_dev);
+                freenect_shutdown(f_ctx);
+                std::this_thread::sleep_for(std::chrono::seconds(5));
+                continue;
+            }
+            // IMPORTANT: Start the depth stream.
+            if (freenect_start_depth(f_dev) < 0) {
                 std::cerr << "Could not start the depth stream. Reconnecting..." << std::endl;
                 if (enable_ir || enable_rgb)
                     freenect_stop_video(f_dev);
@@ -195,6 +230,7 @@ int main(int argc, char** argv) {
 
             // Process video frame (IR or RGB) if available.
             if ((enable_ir || enable_rgb) && newVideoFrame.load()) {
+                // Create a BGRX frame buffer.
                 std::vector<uint8_t> rgbaFrame(WIDTH * HEIGHT * 4);
                 std::vector<uint8_t> localVideoBuffer;
                 {
@@ -203,16 +239,16 @@ int main(int argc, char** argv) {
                     newVideoFrame = false;
                 }
                 if (enable_ir) {
-                    // For IR, replicate the single channel into R, G, and B.
+                    // For IR, replicate the single channel into B, G, and R.
                     for (int i = 0; i < WIDTH * HEIGHT; i++) {
                         uint8_t gray = localVideoBuffer[i];
                         rgbaFrame[i * 4 + 0] = gray;  // Blue
                         rgbaFrame[i * 4 + 1] = gray;  // Green
                         rgbaFrame[i * 4 + 2] = gray;  // Red
-                        rgbaFrame[i * 4 + 3] = 255;   // Alpha
+                        rgbaFrame[i * 4 + 3] = 255;   // Unused (X)
                     }
                 } else if (enable_rgb) {
-                    // For RGB, convert from RGB to BGRA.
+                    // For RGB, convert from RGB to BGRX.
                     for (int i = 0; i < WIDTH * HEIGHT; i++) {
                         uint8_t r = localVideoBuffer[i * 3 + 0];
                         uint8_t g = localVideoBuffer[i * 3 + 1];
@@ -220,20 +256,20 @@ int main(int argc, char** argv) {
                         rgbaFrame[i * 4 + 0] = b; // Blue
                         rgbaFrame[i * 4 + 1] = g; // Green
                         rgbaFrame[i * 4 + 2] = r; // Red
-                        rgbaFrame[i * 4 + 3] = 255; // Alpha
+                        rgbaFrame[i * 4 + 3] = 255; // Unused (X)
                     }
                 }
                 NDIlib_video_frame_v2_t videoFrame;
                 videoFrame.xres = WIDTH;
                 videoFrame.yres = HEIGHT;
-                videoFrame.FourCC = NDIlib_FourCC_type_BGRA;
+                videoFrame.FourCC = NDIlib_FourCC_type_BGRX;
                 videoFrame.frame_rate_N = 30;
                 videoFrame.frame_rate_D = 1;
                 videoFrame.picture_aspect_ratio = static_cast<float>(WIDTH) / HEIGHT;
                 videoFrame.p_data = rgbaFrame.data();
                 videoFrame.line_stride_in_bytes = WIDTH * 4;
                 if (ndiSenderVideo)
-                    NDIlib_send_send_video_async_v2(ndiSenderVideo, &videoFrame);
+                    NDIlib_send_send_video_v2(ndiSenderVideo, &videoFrame);
             }
 
             // Process depth frame if available.
@@ -252,19 +288,19 @@ int main(int argc, char** argv) {
                     rgbaFrame[i * 4 + 0] = gray; // Blue
                     rgbaFrame[i * 4 + 1] = gray; // Green
                     rgbaFrame[i * 4 + 2] = gray; // Red
-                    rgbaFrame[i * 4 + 3] = 255;  // Alpha
+                    rgbaFrame[i * 4 + 3] = 255;  // Unused (X)
                 }
                 NDIlib_video_frame_v2_t depthFrame;
                 depthFrame.xres = WIDTH;
                 depthFrame.yres = HEIGHT;
-                depthFrame.FourCC = NDIlib_FourCC_type_BGRA;
+                depthFrame.FourCC = NDIlib_FourCC_type_BGRX;
                 depthFrame.frame_rate_N = 30;
                 depthFrame.frame_rate_D = 1;
                 depthFrame.picture_aspect_ratio = static_cast<float>(WIDTH) / HEIGHT;
                 depthFrame.p_data = rgbaFrame.data();
                 depthFrame.line_stride_in_bytes = WIDTH * 4;
                 if (ndiSenderDepth)
-                    NDIlib_send_send_video_async_v2(ndiSenderDepth, &depthFrame);
+                    NDIlib_send_send_video_v2(ndiSenderDepth, &depthFrame);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }  // End inner loop
@@ -280,7 +316,7 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::seconds(5));
     }  // End outer loop
 
-    // Cleanup (never reached in this infinite-loop design).
+    // Cleanup (unreachable in this infinite-loop design).
     if (ndiSenderVideo)
         NDIlib_send_destroy(ndiSenderVideo);
     if (ndiSenderDepth)
