@@ -25,15 +25,15 @@ print_header() {
 get_NDI() {
   log "Downloading NDI SDK for Linux."
   # Download the tarball to /tmp.
-  curl -s -L https://downloads.ndi.tv/SDK/NDI_SDK_Linux/Install_NDI_SDK_v5_Linux.tar.gz \
-    -o /tmp/Install_NDI_SDK_v5_Linux.tar.gz || error_exit "Failed to download NDI SDK."
+  curl -s -L https://downloads.ndi.tv/SDK/NDI_SDK_Linux/Install_NDI_SDK_v6_Linux.tar.gz \
+    -o /tmp/Install_NDI_SDK_v6_Linux.tar.gz || error_exit "Failed to download NDI SDK."
   
   log "Extracting NDI SDK tarball."
-  tar xvzf /tmp/Install_NDI_SDK_v5_Linux.tar.gz -C /tmp/ \
+  tar xvzf /tmp/Install_NDI_SDK_v6_Linux.tar.gz -C /tmp/ \
     || error_exit "Failed to extract NDI SDK tarball."
   
   log "Running NDI SDK installer."
-  yes y | bash /tmp/Install_NDI_SDK_v5_Linux.sh > /tmp/ndi_install.log 2>&1 \
+  yes y | bash /tmp/Install_NDI_SDK_v6_Linux.sh > /tmp/ndi_install.log 2>&1 \
     || error_exit "Failed to install NDI SDK. Check /tmp/ndi_install.log for details."
 }
 
